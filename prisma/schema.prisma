@@ -1,0 +1,329 @@
+// Order-to-Audit: schema
+// Conventions:
+//  - Money is INTEGER PAISE (Int). Never floats.
+//  - Quantities are INTEGERS IN BASE UNITS (g, ml, pcs). 40 kg flour = 40000.
+//  - unitCost is paise per BASE unit as Decimal (Rs 45/kg = 4.5 paise/g), so costs stay exact.
+//  - Stock balance = SUM(StockMovement.qtyDelta). There is no balance column to overwrite.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SALESMAN
+  FACTORY_ADMIN
+  PRODUCTION
+  ACCOUNTANT
+  OWNER
+}
+
+enum ItemKind {
+  RAW
+  PACKAGING
+  FINISHED
+}
+
+enum BaseUnit {
+  G
+  ML
+  PCS
+}
+
+enum MovementType {
+  OPENING
+  PURCHASE
+  PRODUCTION_ISSUE
+  PRODUCTION_OUTPUT
+  PRODUCTION_DAMAGE
+  DISPATCH
+  SALES_RETURN
+  ADJUSTMENT
+}
+
+enum OrderStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  INVOICED
+  DISPATCHED
+}
+
+enum InvoiceStatus {
+  POSTED
+  CANCELLED // only via credit note, never deleted
+}
+
+enum RunStatus {
+  DRAFT
+  POSTED
+}
+
+model Setting {
+  id                Int    @id @default(1)
+  companyName       String
+  gstin             String
+  stateCode         String // factory state, drives CGST/SGST vs IGST
+  stateName         String
+  variancePctTol    Int    @default(3) // tolerance in whole percent
+  fyStartMonth      Int    @default(4)
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  orders       Order[]
+}
+
+// Every stock-keeping thing: raw, packaging, finished goods.
+model Item {
+  id           Int        @id @default(autoincrement())
+  sku          String     @unique
+  name         String
+  kind         ItemKind
+  baseUnit     BaseUnit
+  displayUnit  String // "kg", "L", "pcs", "packets"
+  displayFactor Int // base units per display unit (kg=1000, L=1000, pcs=1)
+  reorderLevel Int? // base units
+  movements    StockMovement[]
+  bomLines     BomLine[]
+  product      Product?
+  adjustments  StockAdjustment[]
+  runLines     ProductionRunLine[]
+}
+
+// Finished-goods product + pack size. A 500 g pack = another Product row.
+model Product {
+  id              Int    @id @default(autoincrement())
+  name            String
+  packLabel       String // "200 g"
+  itemId          Int    @unique // the FINISHED Item that holds its stock
+  item            Item   @relation(fields: [itemId], references: [id])
+  hsn             String
+  gstRatePct      Int // 5
+  pricePaise      Int // list price per packet, before tax
+  packetsPerCarton Int
+  boms            Bom[]
+  orderLines      OrderLine[]
+}
+
+model Bom {
+  id            Int       @id @default(autoincrement())
+  productId     Int
+  product       Product   @relation(fields: [productId], references: [id])
+  expectedYield Int // packets per batch
+  active        Boolean   @default(true)
+  lines         BomLine[]
+  runs          ProductionRun[]
+}
+
+model BomLine {
+  id          Int  @id @default(autoincrement())
+  bomId       Int
+  bom         Bom  @relation(fields: [bomId], references: [id])
+  itemId      Int
+  item        Item @relation(fields: [itemId], references: [id])
+  qtyPerBatch Int // base units
+  @@unique([bomId, itemId])
+}
+
+model Supplier {
+  id        Int        @id @default(autoincrement())
+  name      String
+  gstin     String?
+  purchases Purchase[]
+}
+
+model Purchase {
+  id         Int            @id @default(autoincrement())
+  supplierId Int
+  supplier   Supplier       @relation(fields: [supplierId], references: [id])
+  billNo     String
+  date       DateTime
+  createdById Int
+  lines      PurchaseLine[]
+}
+
+model PurchaseLine {
+  id         Int      @id @default(autoincrement())
+  purchaseId Int
+  purchase   Purchase @relation(fields: [purchaseId], references: [id])
+  itemId     Int
+  qty        Int // base units
+  unitCost   Decimal  @db.Decimal(18, 6) // paise per base unit
+  batchNo    String?
+  expiry     DateTime?
+}
+
+model ProductionRun {
+  id             Int       @id @default(autoincrement())
+  runNo          String    @unique
+  bomId          Int
+  bom            Bom       @relation(fields: [bomId], references: [id])
+  batches        Int       @default(1)
+  runDate        DateTime
+  expectedOutput Int // batches * bom.expectedYield, snapshotted
+  goodOutput     Int
+  damagedPackets Int       @default(0)
+  labourPaise    Int       @default(0)
+  powerGasPaise  Int       @default(0)
+  otherOverheadPaise Int   @default(0)
+  status         RunStatus @default(POSTED)
+  createdById    Int
+  lines          ProductionRunLine[]
+}
+
+// plannedQty is snapshotted from the BOM at save time; actualQty is what was issued/used.
+model ProductionRunLine {
+  id         Int           @id @default(autoincrement())
+  runId      Int
+  run        ProductionRun @relation(fields: [runId], references: [id])
+  itemId     Int
+  item       Item          @relation(fields: [itemId], references: [id])
+  plannedQty Int
+  actualQty  Int
+  unitCost   Decimal       @db.Decimal(18, 6) // weighted avg at time of issue
+}
+
+// THE LEDGER. Append-only. Every row names its source document.
+model StockMovement {
+  id          Int          @id @default(autoincrement())
+  itemId      Int
+  item        Item         @relation(fields: [itemId], references: [id])
+  qtyDelta    Int // + in, - out, base units
+  unitCost    Decimal      @db.Decimal(18, 6)
+  type        MovementType
+  sourceType  String // "PURCHASE" | "PRODUCTION_RUN" | "INVOICE" | "ADJUSTMENT" | "OPENING"
+  sourceId    String?
+  batchNo     String?
+  expiry      DateTime?
+  note        String?
+  createdById Int?
+  occurredAt  DateTime     @default(now())
+  @@index([itemId, occurredAt])
+  @@index([sourceType, sourceId])
+}
+
+model Customer {
+  id        Int       @id @default(autoincrement())
+  name      String
+  type      String // RETAILER | DISTRIBUTOR
+  gstin     String?
+  stateCode String
+  stateName String
+  orders    Order[]
+  invoices  Invoice[]
+  payments  Payment[]
+}
+
+model Order {
+  id         Int         @id @default(autoincrement())
+  customerId Int
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  salesmanId Int
+  salesman   User        @relation(fields: [salesmanId], references: [id])
+  status     OrderStatus @default(SUBMITTED)
+  clientRef  String?     @unique // idempotency key for offline sync
+  createdAt  DateTime    @default(now())
+  lines      OrderLine[]
+  invoice    Invoice?
+}
+
+model OrderLine {
+  id         Int     @id @default(autoincrement())
+  orderId    Int
+  order      Order   @relation(fields: [orderId], references: [id])
+  productId  Int
+  product    Product @relation(fields: [productId], references: [id])
+  qty        Int // packets
+  pricePaise Int // editable by admin before approval
+}
+
+model Invoice {
+  id           Int           @id @default(autoincrement())
+  invoiceNo    String        @unique // e.g. 2026-27/0001
+  fy           String // "2026-27"
+  orderId      Int           @unique
+  order        Order         @relation(fields: [orderId], references: [id])
+  customerId   Int
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  intraState   Boolean
+  taxablePaise Int
+  cgstPaise    Int
+  sgstPaise    Int
+  igstPaise    Int
+  totalPaise   Int
+  status       InvoiceStatus @default(POSTED)
+  dispatchedAt DateTime?
+  createdAt    DateTime      @default(now())
+  lines        InvoiceLine[]
+  creditNotes  CreditNote[]
+  payments     Payment[]
+}
+
+model InvoiceLine {
+  id           Int     @id @default(autoincrement())
+  invoiceId    Int
+  invoice      Invoice @relation(fields: [invoiceId], references: [id])
+  productId    Int
+  hsn          String
+  qty          Int
+  pricePaise   Int
+  taxablePaise Int
+  gstRatePct   Int
+}
+
+model CreditNote {
+  id         Int     @id @default(autoincrement())
+  noteNo     String  @unique
+  invoiceId  Int
+  invoice    Invoice @relation(fields: [invoiceId], references: [id])
+  amountPaise Int
+  reason     String
+  createdAt  DateTime @default(now())
+}
+
+model Payment {
+  id          Int       @id @default(autoincrement())
+  customerId  Int
+  customer    Customer  @relation(fields: [customerId], references: [id])
+  invoiceId   Int?
+  invoice     Invoice?  @relation(fields: [invoiceId], references: [id])
+  amountPaise Int
+  mode        String
+  receivedAt  DateTime  @default(now())
+  createdById Int
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  entity    String // "Invoice" | "ProductionRun" ...
+  entityId  String
+  action    String // CREATE | UPDATE | CANCEL
+  userId    Int
+  before    Json?
+  after     Json?
+  at        DateTime @default(now())
+  @@index([entity, entityId])
+}
+
+// Source document for OPENING and ADJUSTMENT stock movements (manual corrections, stock-take differences).
+model StockAdjustment {
+  id          Int      @id @default(autoincrement())
+  kind        String // OPENING | ADJUSTMENT
+  itemId      Int
+  item        Item     @relation(fields: [itemId], references: [id])
+  qtyDelta    Int // base units, signed
+  reason      String
+  createdById Int
+  createdAt   DateTime @default(now())
+}

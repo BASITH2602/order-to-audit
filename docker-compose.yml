@@ -1,0 +1,48 @@
+# Production-style run:   cp .env.example .env  (fill it in)  &&  docker compose up --build
+# Evaluator benchmark run: docker compose --env-file .env.benchmark up --build
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ota
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ota}
+      POSTGRES_DB: ota
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ota -d ota"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:5433:5432" # local-only, for running tests from the host
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://ota:${POSTGRES_PASSWORD:-ota}@db:5432/ota
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env (at least 32 characters)}
+      COMPANY_NAME: ${COMPANY_NAME:?Set COMPANY_NAME in .env}
+      COMPANY_GSTIN: ${COMPANY_GSTIN:?Set COMPANY_GSTIN in .env}
+      COMPANY_STATE_CODE: ${COMPANY_STATE_CODE:?Set COMPANY_STATE_CODE in .env}
+      COMPANY_STATE_NAME: ${COMPANY_STATE_NAME:?Set COMPANY_STATE_NAME in .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?Set ADMIN_USERNAME in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      LOAD_BENCHMARK_SEED: ${LOAD_BENCHMARK_SEED:-false}
+      BENCHMARK_PASSWORD: ${BENCHMARK_PASSWORD:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-}
+      APP_URL: ${APP_URL:-}
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+volumes:
+  pgdata:

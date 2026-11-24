@@ -1,0 +1,14 @@
+node_modules
+.next
+out
+*.log
+.DS_Store
+next-env.d.ts
+*.tsbuildinfo
+
+# secrets: ignore real env files, keep the documented examples
+.env
+.env.*
+!.env.example
+!.env.benchmark
+!.env.local-demo
