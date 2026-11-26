@@ -138,7 +138,7 @@ async function main() {
     }
   }
 
-  console.log('Seed complete. Logins (password Passw0rd!): salesman_a, salesman_b, admin, production, accountant, owner')
+  console.log('Seed complete. Logins (password from BENCHMARK_PASSWORD): salesman_a, salesman_b, admin, production, accountant, owner')
 }
 
 main()
