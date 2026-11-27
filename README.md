@@ -146,6 +146,8 @@ Asserted by `tests/benchmark.test.ts`.
 
 **Cost per packet:** weighted-average cost of materials on the actual quantities used (flour ₹43.125/kg after the second purchase, oil ₹140/L, spice mix ₹200/kg, pouches ₹2.50, cartons ₹15) = ₹4,055.00, plus ₹1,200 labour and ₹600 gas/power = ₹5,855.00, divided by 188 good packets.
 
+Verified on 27 Nov 2026 with `npx vitest run` (all tests passing).
+
 **Differences and interpretations (reasoned, not accidental)**
 1. **Pouches:** the BOM says 200 per batch, but the benchmark expects a closing balance of 306, which means 194 were consumed (188 good + 6 damaged). The supervisor's form has a button that sets pouches = good + damaged. Pouch variance is −3% (194 vs 200), which is not flagged because the rule is *strictly beyond* the ±3% tolerance.
 2. **Cartons:** 9 were used against a planned 10, which is −10%. This is flagged. The brief does not list it as a check, but the rule applies equally to packaging.
@@ -188,4 +190,4 @@ docs/              DESIGN.md, DEMO_SCRIPT.md
 
 ## Demo video
 
-`<add unlisted YouTube or Drive link here>` — script in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
+[Watch demo video on YouTube](https://youtu.be/vEBs_ZoM0_g) – script in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
